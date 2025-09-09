@@ -117,3 +117,21 @@ python check_entry.py
 | `getEntry(uint256 i)`                                        | Returns `(signer, hash, timestamp)`.                        |
 | `entriesCount()`                                             | Returns total number of stored entries.                     |
 
+🚀 Project Status
+
+✅ Phase 1: WebSocket server + CLI client
+
+✅ Phase 2: Browser UI
+
+✅ Phase 3: Client-side hashing (crypto.subtle)
+
+✅ Phase 4: Server anchoring messages on-chain
+
+✅ Phase 5: MetaMask signing integrated
+
+✅ Phase 6: On-chain signature verification
+
+
+---
+
+
