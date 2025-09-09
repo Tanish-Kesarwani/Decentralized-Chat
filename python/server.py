@@ -1,10 +1,9 @@
 ﻿# server.py
-# Complete server for Decentralized Chat (Phase 6 ready)
-# - WebSocket broadcast
-# - static file serving (index.html)
-# - CORS-enabled /store that can call storeHash or storeHashWithSig on-chain
-# - message persistence and /history endpoint
-# - Python 3.12 shim to support parsimonious used by web3 deps
+# Phase 6-ready server: WebSocket + static index.html + /store that supports storeHashWithSig
+#
+# Place this at: C:\Users\Hp\Desktop\decentralized_chat\python\server.py
+# Requires: aiohttp, web3 (v5), eth_account, etc. (your venv already has these)
+# Make sure contract_info.json exists in the same folder (written by deploy.js)
 
 # --- Python 3.12 compatibility shim for parsimonious (adds inspect.getargspec) ---
 import inspect
@@ -19,31 +18,27 @@ if not hasattr(inspect, "getargspec"):
 import os
 import json
 import time
-import asyncio
 from aiohttp import web, WSMsgType, WSCloseCode
 from web3 import Web3
 from eth_account.messages import encode_defunct
 
-# ----------------- Configuration -----------------
-WS_PATH = '/ws'
+# ---------- Configuration ----------
 HTTP_HOST = '0.0.0.0'
 HTTP_PORT = int(os.environ.get('HTTP_PORT', '9002'))
 
-CONTRACT_INFO_PATH = 'contract_info.json'   # written by deploy.js
+CONTRACT_INFO_PATH = os.path.join(os.getcwd(), 'contract_info.json')  # must exist
 RPC_URL = os.environ.get('RPC_URL', 'http://127.0.0.1:8545')
-SERVER_PRIVATE_KEY = os.environ.get('SERVER_PRIVATE_KEY')  # server pays gas if set
+SERVER_PRIVATE_KEY = os.environ.get('SERVER_PRIVATE_KEY')  # hex string '0x...'
 
-MESSAGES_FILE = 'messages.json'
-# --------------------------------------------------
+MESSAGES_FILE = os.path.join(os.getcwd(), 'messages.json')
+WS_PATH = '/ws'
+# -----------------------------------
 
-# Load contract info (address + abi)
+# Load contract info (address + ABI)
 contract_info = {}
 if os.path.exists(CONTRACT_INFO_PATH):
-    try:
-        with open(CONTRACT_INFO_PATH, 'r') as f:
-            contract_info = json.load(f)
-    except Exception as e:
-        print("Failed to read contract_info.json:", e)
+    with open(CONTRACT_INFO_PATH, 'r', encoding='utf-8') as f:
+        contract_info = json.load(f)
 
 CONTRACT_ADDRESS = contract_info.get('address')
 CONTRACT_ABI = contract_info.get('abi')
@@ -57,27 +52,25 @@ if CONTRACT_ADDRESS and CONTRACT_ABI and SERVER_PRIVATE_KEY:
     server_account = w3.eth.account.from_key(SERVER_PRIVATE_KEY)
     print("Server will submit txs using address:", server_account.address)
 else:
-    print("On-chain writing not configured (set SERVER_PRIVATE_KEY and ensure contract_info.json exists to enable).")
+    print("On-chain writing not configured. To enable set SERVER_PRIVATE_KEY and ensure contract_info.json exists.")
 
 # Ensure messages.json exists
 if not os.path.exists(MESSAGES_FILE):
-    with open(MESSAGES_FILE, 'w') as f:
+    with open(MESSAGES_FILE, 'w', encoding='utf-8') as f:
         json.dump([], f)
 
 PEERS = set()
 
-# ----------------- Helpers -----------------
+# ---------------- Helpers ----------------
 
-def cors_response(body, status=200):
-    """Return a JSON response with permissive CORS headers for demo."""
-    resp = web.json_response(body, status=status)
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Access-Control-Allow-Methods'] = 'POST, GET, OPTIONS'
-    resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return resp
+def cors_json(body, status=200):
+    r = web.json_response(body, status=status)
+    r.headers['Access-Control-Allow-Origin'] = '*'
+    r.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    r.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return r
 
-def append_message_record(record):
-    """Append message to messages.json safely."""
+def append_message(record):
     try:
         with open(MESSAGES_FILE, 'r+', encoding='utf-8') as f:
             try:
@@ -89,29 +82,28 @@ def append_message_record(record):
             json.dump(data, f, indent=2)
             f.truncate()
     except Exception as e:
-        print("Failed to append message record:", e)
+        print("Failed to append message:", e)
 
 def split_signature(sig_hex: str):
     """
-    Convert a 65-byte signature hex string (0x...) to (r_bytes, s_bytes, v_int).
-    Accepts v as 0/1 or 27/28, returns v as 27/28 for EVM.
+    Accept '0x'-prefixed 65-byte signature hex and return (r_bytes, s_bytes, v_int)
     """
     if not isinstance(sig_hex, str):
-        raise ValueError("signature must be hex string")
+        raise ValueError("sig must be hex string")
     s = sig_hex[2:] if sig_hex.startswith('0x') else sig_hex
     if len(s) != 130:
-        raise ValueError("signature must be 65 bytes hex (130 hex chars), got length {}".format(len(s)))
-    r = bytes.fromhex(s[0:64])
-    s_ = bytes.fromhex(s[64:128])
+        raise ValueError(f"signature length must be 65 bytes hex (130 chars), got {len(s)}")
+    r_hex = s[0:64]
+    s_hex = s[64:128]
     v_raw = int(s[128:130], 16)
-    # normalize v to 27/28
-    if v_raw in (0, 1):
+    # normalize v to 27/28 if web3 returns 0/1
+    if v_raw in (0,1):
         v = v_raw + 27
     else:
         v = v_raw
-    return (r, s_, v)
+    return (bytes.fromhex(r_hex), bytes.fromhex(s_hex), v)
 
-# ----------------- WebSocket handlers -----------------
+# ---------------- WebSocket ----------------
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
@@ -126,26 +118,25 @@ async def websocket_handler(request):
                 try:
                     data = json.loads(msg.data)
                 except Exception:
-                    print("Invalid JSON received:", msg.data)
+                    print("Invalid JSON:", msg.data)
                     continue
 
                 mtype = data.get('type')
                 if mtype == 'register':
-                    payload = {'type': 'peer-joined', 'addr': data.get('addr'), 'name': data.get('name')}
-                    await broadcast(payload)
+                    await broadcast({'type': 'peer-joined', 'name': data.get('name'), 'addr': data.get('addr')})
                 elif mtype == 'chat':
-                    # recover signer if signature present (best-effort)
+                    # attempt server-side recovery if sig present and web3 available
                     sig = data.get('sig')
                     recovered = None
                     if sig and w3:
                         try:
-                            hexmsg = data.get('hash')
-                            if not hexmsg:
-                                raise ValueError("no hash to recover from")
-                            message = encode_defunct(hexstr=hexmsg)
-                            recovered = w3.eth.account.recover_message(message, signature=sig)
+                            message_hash = data.get('hash')
+                            if message_hash:
+                                # message was hashed client-side (hex), recover
+                                msg_enc = encode_defunct(hexstr=message_hash)
+                                recovered = w3.eth.account.recover_message(msg_enc, signature=sig)
                         except Exception as e:
-                            print("Signature recovery failed:", e)
+                            print("Recover signature failed:", e)
                             recovered = None
 
                     record = {
@@ -157,9 +148,10 @@ async def websocket_handler(request):
                         'signer': recovered,
                         'received_at': int(time.time())
                     }
-                    append_message_record(record)
+                    append_message(record)
 
-                    payload = {
+                    # broadcast to peers
+                    broadcast_payload = {
                         'type': 'broadcast',
                         'room': data.get('room', 'lobby'),
                         'from': data.get('from'),
@@ -169,13 +161,13 @@ async def websocket_handler(request):
                         'sig': sig,
                         'signer': recovered
                     }
-                    await broadcast(payload)
+                    await broadcast(broadcast_payload)
                 else:
-                    print("Unknown message type:", mtype)
+                    print("Unknown ws type:", mtype)
             elif msg.type == WSMsgType.ERROR:
-                print('WebSocket closed with exception:', ws.exception())
-    except Exception as e:
-        print("WebSocket handler exception:", e)
+                print("WebSocket error:", ws.exception())
+    except Exception as exc:
+        print("WebSocket handler exception:", exc)
     finally:
         try:
             PEERS.discard(ws)
@@ -188,109 +180,105 @@ async def websocket_handler(request):
 async def broadcast(payload):
     text = json.dumps(payload)
     remove = []
-    for ws in list(PEERS):
+    for p in list(PEERS):
         try:
-            await ws.send_str(text)
+            await p.send_str(text)
         except Exception as e:
-            print("Failed send to peer, removing:", e)
-            remove.append(ws)
+            print("Broadcast send failed, removing peer:", e)
+            remove.append(p)
     for r in remove:
         PEERS.discard(r)
 
-# ----------------- HTTP endpoints -----------------
+# ---------------- HTTP endpoints ----------------
 
-async def store_hash_handler(request):
-    """
-    POST /store
-    Body JSON: { hash: "0x...", sig?: "0x...", sender?: "0x..." }
-    If sig present -> call storeHashWithSig(hash, v, r, s)
-    Else -> call storeHash(hash)
-    """
+async def store_handler(request):
+    # CORS preflight
     if request.method == 'OPTIONS':
-        return cors_response({'ok': True})
+        return cors_json({'ok': True})
 
     if not contract or not server_account:
-        return cors_response({'error': 'on-chain not configured'}, status=400)
+        return cors_json({'error': 'on-chain not configured (SERVER_PRIVATE_KEY or contract missing)'}, status=400)
 
     try:
         body = await request.json()
     except Exception:
-        return cors_response({'error': 'invalid json'}, status=400)
+        return cors_json({'error': 'invalid json'}, status=400)
 
     h = body.get('hash')
     sig = body.get('sig')
+    sender = body.get('sender')
 
     if not h:
-        return cors_response({'error': 'missing hash'}, status=400)
+        return cors_json({'error': 'missing hash'}, status=400)
 
     hexstr = h[2:] if h.startswith('0x') else h
     if len(hexstr) != 64:
-        return cors_response({'error': 'hash must be 32 bytes hex (64 chars)'}, status=400)
+        return cors_json({'error': 'hash must be 32 bytes hex (64 chars). got length ' + str(len(hexstr))}, status=400)
 
     try:
-        # Build tx depending on presence of signature
+        # pick function depending on presence of signature
         if sig:
             try:
-                r_bytes, s_bytes, v = split_signature(sig)
+                r_bytes, s_bytes, v_int = split_signature(sig)
             except Exception as e:
-                return cors_response({'error': 'invalid signature format: ' + str(e)}, status=400)
+                return cors_json({'error': 'invalid signature: ' + str(e)}, status=400)
 
-            # Use raw bytes for r and s when calling contract function
-            tx_fn = contract.functions.storeHashWithSig(bytes.fromhex(hexstr), v, r_bytes, s_bytes)
+            # call storeHashWithSig(h, v, r, s)
+            fn = contract.functions.storeHashWithSig(bytes.fromhex(hexstr), v_int, r_bytes, s_bytes)
         else:
-            tx_fn = contract.functions.storeHash(bytes.fromhex(hexstr))
+            fn = contract.functions.storeHash(bytes.fromhex(hexstr))
 
-        tx = tx_fn.build_transaction({
+        # build and send tx
+        nonce = w3.eth.get_transaction_count(server_account.address)
+        tx = fn.build_transaction({
             'chainId': w3.eth.chain_id,
             'gas': 300000,
             'gasPrice': w3.toWei('1', 'gwei'),
-            'nonce': w3.eth.get_transaction_count(server_account.address)
+            'nonce': nonce
         })
-
-        signed = w3.eth.account.sign_transaction(tx, SERVER_PRIVATE_KEY)
+        signed = w3.eth.account.sign_transaction(tx, private_key=SERVER_PRIVATE_KEY)
         tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
 
-        return cors_response({'txHash': tx_hash.hex(), 'blockNumber': receipt.blockNumber})
+        # optional: if sig was provided and we want to verify on-chain entry we can read event
+        return cors_json({'txHash': tx_hash.hex(), 'blockNumber': receipt.blockNumber})
     except Exception as e:
-        # Return error info for debugging
-        print("store_hash_handler error:", e)
-        return cors_response({'error': str(e)}, status=500)
+        print("store_handler exception:", e)
+        return cors_json({'error': str(e)}, status=500)
 
 async def history_handler(request):
-    limit = int(request.query.get('limit', '100'))
+    limit = int(request.query.get('limit', '200'))
     try:
         with open(MESSAGES_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except Exception:
         data = []
-    return cors_response({'messages': data[-limit:]})
+    return cors_json({'messages': data[-limit:]})
 
-# serve index.html and static files from cwd (same origin)
+# static file serving (index.html in cwd)
 async def index(request):
     p = os.path.join(os.getcwd(), 'index.html')
     if os.path.exists(p):
         return web.FileResponse(path=p)
     return web.Response(status=404, text='index.html not found')
 
-async def static_file(request):
-    filename = request.match_info.get('filename')
-    file_path = os.path.join(os.getcwd(), filename)
-    if os.path.exists(file_path):
-        return web.FileResponse(path=file_path)
+async def static_handler(request):
+    fname = request.match_info.get('filename')
+    pathf = os.path.join(os.getcwd(), fname)
+    if os.path.exists(pathf):
+        return web.FileResponse(path=pathf)
     return web.Response(status=404, text='Not found')
 
-# ----------------- App setup -----------------
-
+# --------------- App setup ---------------
 app = web.Application()
 app.router.add_get('/', index)
 app.router.add_get('/index.html', index)
 app.router.add_get(WS_PATH, websocket_handler)
-app.router.add_route('OPTIONS', '/store', store_hash_handler)
-app.router.add_post('/store', store_hash_handler)
+app.router.add_route('OPTIONS', '/store', store_handler)
+app.router.add_post('/store', store_handler)
 app.router.add_get('/history', history_handler)
-app.router.add_get('/{filename}', static_file)
+app.router.add_get('/{filename}', static_handler)
 
 if __name__ == '__main__':
-    print(f"Starting server on http://{HTTP_HOST if 'HTTP_HOST' in globals() else '0.0.0.0'}:{HTTP_PORT} (serving index.html from cwd)")
-    web.run_app(app, host=HTTP_HOST if 'HTTP_HOST' in globals() else '0.0.0.0', port=HTTP_PORT)
+    print(f"Starting server on http://{HTTP_HOST}:{HTTP_PORT} (serving index.html from cwd)")
+    web.run_app(app, host=HTTP_HOST, port=HTTP_PORT)
