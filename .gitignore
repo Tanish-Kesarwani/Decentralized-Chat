@@ -1,0 +1,23 @@
+# ---- Python ----
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+.env
+*.log
+
+# ---- Node / Hardhat ----
+node_modules/
+package-lock.json
+.cache/
+artifacts/
+cache/
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+
+# ---- VSCode ----
+.vscode/

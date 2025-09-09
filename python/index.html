@@ -1,0 +1,235 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Decentralized Chat — Web UI (Signed)</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; max-width:900px; margin:18px auto; }
+    header { display:flex; gap:12px; align-items:center; }
+    #messages { border:1px solid #ddd; height:360px; overflow:auto; padding:8px; background:#fafafa; margin-top:12px; }
+    .msg { padding:8px; border-bottom:1px solid #eee; }
+    .meta { font-size:0.82em; color:#666; margin-top:6px; }
+    .controls { margin-top:10px; display:flex; gap:8px; align-items:center; }
+    input[type=text] { padding:8px; font-size:1rem; }
+    button { padding:8px 12px; font-size:0.95rem; cursor:pointer; }
+    .small { font-size:0.85rem; color:#444; }
+    .ok { color: green; }
+    .err { color: red; }
+    .mine { background:#eef9ff; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Decentralized Chat (WebSocket + On-chain anchoring + Signatures)</h2>
+  </header>
+
+  <div>
+    <label class="small">Name: <input id="name" type="text" value="webuser" /></label>
+    <label class="small" style="margin-left:12px;">Address: <input id="addr" type="text" placeholder="0x..." style="width:300px" /></label>
+    <button id="connectBtn">Connect</button>
+    <span id="status" class="small" style="margin-left:8px;">Disconnected</span>
+    <label style="margin-left:12px;" class="small"><input id="useMeta" type="checkbox" /> Use MetaMask to sign</label>
+  </div>
+
+  <div id="messages" aria-live="polite"></div>
+
+  <div class="controls">
+    <input id="text" type="text" placeholder="Type message" style="flex:1" />
+    <button id="sendBtn">Send</button>
+    <button id="storeBtn">Store last hash on-chain</button>
+    <span id="storeResult" class="small"></span>
+  </div>
+
+  <script>
+    const WS_URL = 'ws://localhost:9002/ws';
+    const STORE_URL = '/store';       // same origin (server serves index.html)
+    const HISTORY_URL = '/history';   // same origin
+
+    let ws = null;
+    let lastHash = null;
+    let localAddr = null;
+    let myName = null;
+
+    // escape HTML
+    function escapeHtml(s) {
+      return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    }
+
+    function appendMessage(content, metaText, isMine=false) {
+      const el = document.createElement('div');
+      el.className = 'msg' + (isMine ? ' mine' : '');
+      el.innerHTML = `<div>${escapeHtml(content)}</div>${metaText ? `<div class="meta">${escapeHtml(metaText)}</div>` : ''}`;
+      document.getElementById('messages').appendChild(el);
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    }
+
+    // crypto.subtle SHA-256 -> hex (no 0x)
+    async function sha256hex_async(msg) {
+      const enc = new TextEncoder();
+      const data = enc.encode(msg);
+      const buf = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    // MetaMask helpers
+    async function getMetaMaskAccount() {
+      if (!window.ethereum) throw new Error('MetaMask not found');
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      return accounts[0];
+    }
+
+    async function metamask_sign_hash(hashHex, account) {
+      // personal_sign: params order [message, account]
+      // we pass the hashHex string (0x...)
+      const sig = await window.ethereum.request({
+        method: 'personal_sign',
+        params: [hashHex, account]
+      });
+      return sig; // 0x...
+    }
+
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+      const name = document.getElementById('name').value || 'webuser';
+      const addrInput = document.getElementById('addr').value || '';
+      myName = name;
+      localAddr = addrInput || '';
+      await connectWS(name, localAddr);
+    });
+
+    async function loadHistory(limit=200) {
+      try {
+        const res = await fetch(HISTORY_URL + '?limit=' + limit);
+        if (!res.ok) {
+          console.warn('History fetch failed', res.status);
+          return;
+        }
+        const j = await res.json();
+        const msgs = j.messages || [];
+        // show last messages
+        for (const m of msgs) {
+          const signerInfo = m.signer ? ` | signer: ${m.signer}` : '';
+          const meta = `${m.from || 'unknown'} @ ${new Date(m.ts*1000).toLocaleString()} | hash: ${m.hash || ''}${signerInfo}`;
+          const isMine = (m.from === localAddr) || (m.signer && localAddr && m.signer.toLowerCase() === localAddr.toLowerCase());
+          appendMessage(m.text || '', meta, isMine);
+        }
+      } catch (e) {
+        console.warn('Failed to load history', e);
+      }
+    }
+
+    async function connectWS(name, addr) {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+      ws = new WebSocket(WS_URL);
+
+      ws.addEventListener('open', async () => {
+        document.getElementById('status').innerText = 'Connected';
+        appendMessage(`Connected as ${name} (${addr || 'no-addr'})`);
+        // register
+        ws.send(JSON.stringify({ type: 'register', name, addr }));
+        // also load history after connecting
+        await loadHistory(200);
+      });
+
+      ws.addEventListener('message', (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === 'broadcast') {
+            const signerInfo = data.signer ? ` | signer: ${data.signer}` : '';
+            const meta = `${data.from || 'unknown'} @ ${new Date(data.ts*1000).toLocaleString()} | hash: ${data.hash || ''}${signerInfo}`;
+            const isMine = (data.from === localAddr) || (data.signer && localAddr && data.signer.toLowerCase() === localAddr.toLowerCase());
+            appendMessage(data.text || '', meta, isMine);
+            lastHash = data.hash || lastHash;
+          } else if (data.type === 'peer-joined') {
+            appendMessage(`Peer joined: ${data.name || data.addr}`, '');
+          } else {
+            appendMessage('Server: ' + ev.data, '');
+          }
+        } catch (e) {
+          appendMessage('Invalid msg: ' + ev.data, '');
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        document.getElementById('status').innerText = 'Disconnected';
+        appendMessage('Disconnected from server');
+      });
+
+      ws.addEventListener('error', (e) => {
+        appendMessage('WebSocket error', '');
+        console.error('WS error', e);
+      });
+    }
+
+    // send message: compute hash, optionally sign via MetaMask, then send payload
+    async function sendMessageFromUI() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) { alert('Connect first'); return; }
+      const txt = document.getElementById('text').value;
+      if (!txt) return;
+      const addrInput = document.getElementById('addr').value || '';
+      const ts = Math.floor(Date.now() / 1000);
+      const hex = await sha256hex_async(txt + ts.toString());
+      const hashWith0x = '0x' + hex;
+
+      let sig = null;
+      let signerAddr = null;
+
+      if (document.getElementById('useMeta').checked && window.ethereum) {
+        try {
+          signerAddr = await getMetaMaskAccount();
+          sig = await metamask_sign_hash(hashWith0x, signerAddr);
+        } catch (e) {
+          console.warn('MetaMask sign failed or cancelled:', e);
+          // continue without signature
+          sig = null;
+        }
+      }
+
+      const payload = {
+        type: 'chat',
+        room: 'lobby',
+        from: addrInput || signerAddr || 'webclient',
+        ts,
+        text: txt,
+        hash: hashWith0x,
+        sig: sig
+      };
+
+      ws.send(JSON.stringify(payload));
+      const meta = `${payload.from} @ ${new Date(ts*1000).toLocaleString()} ${sig ? '| signed' : ''} | hash: ${hashWith0x}`;
+      appendMessage(txt, meta, (payload.from && payload.from === localAddr));
+      lastHash = hashWith0x;
+      document.getElementById('text').value = '';
+      document.getElementById('storeResult').innerText = '';
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', sendMessageFromUI);
+    document.getElementById('text').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendMessageFromUI();
+    });
+
+    // call /store to anchor lastHash on-chain (server signs tx)
+    document.getElementById('storeBtn').addEventListener('click', async () => {
+      if (!lastHash) { alert('No last hash available'); return; }
+      document.getElementById('storeResult').innerText = 'Storing...';
+      try {
+        const resp = await fetch(STORE_URL, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ hash: lastHash, sender: document.getElementById('addr').value || null })
+        });
+        const j = await resp.json();
+        if (resp.ok) {
+          document.getElementById('storeResult').innerHTML = `<span class="ok">Stored tx: ${j.txHash} (block ${j.blockNumber})</span>`;
+        } else {
+          document.getElementById('storeResult').innerHTML = `<span class="err">Error: ${j.error || JSON.stringify(j)}</span>`;
+        }
+      } catch (e) {
+        document.getElementById('storeResult').innerHTML = `<span class="err">Network error: ${e}</span>`;
+      }
+    });
+
+    // optional: auto-connect with defaults on page load
+    // window.addEventListener('load', () => connectWS('webuser','webclient'));
+  </script>
+</body>
+</html>
