@@ -1,137 +1,167 @@
-# 🕸️ Decentralized Chat  
-**WebSocket + Blockchain Anchoring + MetaMask Signatures**
+# Decentralized Chat: Blockchain-Secured Messaging Platform 🚀
 
-A hybrid **decentralized chat application** that combines **real-time messaging** (via WebSockets) with **tamper-proof anchoring** of messages on the Ethereum blockchain.  
-This project demonstrates how **off-chain scalability** (fast messaging) can be combined with **on-chain verifiability** (blockchain storage + digital signatures).
+> A modern chat application combining real-time messaging with blockchain security - where WhatsApp meets Ethereum.
 
----
+## ✨ Why This Project?
+* **Security First**: Cryptographically signed and verified messages
+* **Decentralized Trust**: No central authority controls message validity
+* **Real-Time Communication**: WebSocket-powered instant messaging
+* **Blockchain Integration**: Ethereum-based message verification
 
-## ✨ Features
+## 🎯 Core Features
 
-- ⚡ **Real-time Chat** — powered by WebSockets (`aiohttp` + Python server)  
-- ⛓️ **On-chain Anchoring** — message hashes (SHA-256) stored on Ethereum  
-- 🔐 **MetaMask Integration** — sign messages with Ethereum wallet  
-- ✅ **Signature Verification** — Solidity contract ensures authenticity  
-- 🌐 **Browser UI** — lightweight `index.html` (no heavy frameworks)  
-- 💻 **Cross-Client Support** — chat via:
-  - Python CLI client (`ws_client.py`)  
-  - Browser client (with/without MetaMask)  
+### 1. Real-Time Chat
+* Instant WebSocket message delivery
+* Multi-user support
+* Persistent message history
+* Intuitive web interface
 
----
+### 2. Blockchain Security
+* Ethereum smart contract verification
+* MetaMask integration
+* On-chain message hash storage
+* Immutable message records
 
-## 📂 Project Structure
+### 3. Technical Features
+* WebSocket real-time communication
+* SHA-256 message hashing
+* Ethereum smart contract integration
+* MetaMask wallet connectivity
 
-```text
-decentralized_chat/
-├── python/                # Python server + clients
-│   ├── server.py          # WebSocket + REST API server
-│   ├── ws_client.py       # CLI WebSocket chat client
-│   ├── peer_server.py     # (old P2P prototype)
-│   ├── peer_client.py     # (old P2P prototype)
-│   ├── check_entry.py     # Inspect contract entries
-│   ├── contract_info.json # ABI + deployed contract address
-│   └── requirements.txt   # Python dependencies
-│
-├── solidity/              # Hardhat smart contracts
-│   ├── contracts/
-│   │   └── MessageRegistry.sol
-│   ├── scripts/deploy.js
-│   ├── hardhat.config.js
-│   └── package.json
-│
-├── index.html             # Web UI
-└── README.md
+## 🛠️ Technical Architecture
 
----
+### Frontend Layer
+```plaintext
+📁 python/static/
+├── js/
+│   ├── client.js      # WebSocket handling
+│   ├── blockchain.js  # Web3 integration
+│   └── ui.js          # User interface logic
+├── css/
+│   └── style.css      # Application styling
+└── index.html         # Main application page
+```
 
+### Backend Layer
+```plaintext
+📁 python/
+├── server.py          # WebSocket server
+├── message_handler.py
+└── blockchain_utils.py
+```
 
----
+### Smart Contract Layer
+```plaintext
+📁 solidity/contracts/
+└── MessageRegistry.sol # Message verification contract
+```
 
-## ⚙️ Setup Instructions
+## 🚀 Setup Guide
 
-### 1️⃣ Clone Repo
+### Prerequisites
+* Python 3.8+
+* Node.js 14+
+* MetaMask browser extension
+* Ethereum testnet (Goerli) access
+* Web3 provider (Infura/Alchemy)
+
+### Installation Steps
+
+1. **Clone & Setup Environment**
 ```bash
-git clone https://github.com/<your-username>/Decentralized-Chat.git
-cd Decentralized-Chat
-2️⃣ Install Dependencies
-
-🔹 Python (backend + CLI client)
-
-cd python
+git clone https://github.com/yourusername/decentralized_chat.git
+cd decentralized_chat
 python -m venv venv
-# Windows
-.\venv\Scripts\activate
-# Linux/Mac
-source venv/bin/activate
+.\venv\Scripts\activate  # Windows
+```
 
+2. **Install Dependencies**
+```bash
 pip install -r requirements.txt
-
-🔹 Node.js (Solidity contracts)
-
-cd solidity
 npm install
+```
 
-3️⃣ Run Local Blockchain (Hardhat)
-cd solidity
-npx hardhat node
+3. **Configure Environment**
+```bash
+# Create .env file
+ETHEREUM_NETWORK=goerli
+WEB3_PROVIDER_URL=your_provider_url
+CONTRACT_ADDRESS=deployed_contract_address
+```
 
-4️⃣ Deploy Smart Contract
-cd solidity
-npx hardhat run --network localhost scripts/deploy.js
+4. **Deploy Smart Contract**
+```bash
+npx hardhat compile
+npx hardhat run scripts/deploy.js --network goerli
+```
 
+## 💡 Implementation Examples
 
-👉 This writes the deployed contract’s address + ABI to:
-python/contract_info.json
+### WebSocket Connection
+```javascript
+// filepath: python/static/js/client.js
+const ws = new WebSocket('ws://localhost:8765');
+ws.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    displayMessage(message);
+};
+```
 
-5️⃣ Start Python Server
-cd python
-.\venv\Scripts\activate
+### Message Signing
+```javascript
+// filepath: python/static/js/blockchain.js
+async function signMessage(message) {
+    const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+    const signature = await ethereum.request({
+        method: 'personal_sign',
+        params: [message, accounts[0]]
+    });
+    return signature;
+}
+```
 
-# Example: Windows PowerShell
-$env:SERVER_PRIVATE_KEY="0x<your-private-key>"
-$env:RPC_URL="http://127.0.0.1:8545"
+### Smart Contract Verification
+```solidity
+// filepath: solidity/contracts/MessageRegistry.sol
+pragma solidity ^0.8.0;
 
-python server.py
+contract MessageRegistry {
+    mapping(bytes32 => bool) public verifiedMessages;
+    
+    function verifyMessage(bytes32 messageHash, bytes memory signature) public {
+        address signer = recover(messageHash, signature);
+        verifiedMessages[messageHash] = true;
+        emit MessageVerified(messageHash, signer);
+    }
+}
+```
 
+## 🔍 Message Flow
+1. User inputs message
+2. Optional MetaMask signing
+3. WebSocket transmission
+4. Server broadcast
+5. Blockchain verification (if signed)
+6. Message display & verification status
 
-🌐 Server runs at: http://localhost:9002
+## 🤝 Contributing
 
-6️⃣ Open Web UI
+### Development Process
+1. Fork repository
+2. Create feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Open Pull Request
 
-Open python/index.html directly, or
+### Coding Standards
+* Python: PEP 8
+* JavaScript: ESLint (Airbnb)
+* Solidity: Official style guide
 
-Visit http://localhost:9002 if served by Python server
-
-✔️ Enter your username + address
-✔️ Tick “Use MetaMask to sign” for wallet-based signatures
-
-8️⃣ Verify On-Chain Entries
-cd python
-python check_entry.py
-
-🧩 Smart Contract: MessageRegistry.sol
-| Function                                                     | Description                                                 |
-| ------------------------------------------------------------ | ----------------------------------------------------------- |
-| `storeHash(bytes32 h)`                                       | Stores a message hash (server pays gas).                    |
-| `storeHashWithSig(bytes32 h, uint8 v, bytes32 r, bytes32 s)` | Stores a signed hash and recovers signer using `ecrecover`. |
-| `getEntry(uint256 i)`                                        | Returns `(signer, hash, timestamp)`.                        |
-| `entriesCount()`                                             | Returns total number of stored entries.                     |
-
-🚀 Project Status
-
-✅ Phase 1: WebSocket server + CLI client
-
-✅ Phase 2: Browser UI
-
-✅ Phase 3: Client-side hashing (crypto.subtle)
-
-✅ Phase 4: Server anchoring messages on-chain
-
-✅ Phase 5: MetaMask signing integrated
-
-✅ Phase 6: On-chain signature verification
-
-
----
-
+## 📈 Future Roadmap
+* End-to-end encryption
+* Group chat functionality
+* File sharing capabilities
+* Multi-blockchain support
+* Custom token integration
 
